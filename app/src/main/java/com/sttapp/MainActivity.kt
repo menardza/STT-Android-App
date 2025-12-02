@@ -8,16 +8,18 @@ import android.content.IntentFilter
 import android.content.pm.PackageManager
 import android.os.Build
 import android.os.Bundle
-import android.speech.RecognitionListener
-import android.speech.RecognizerIntent
-import android.speech.SpeechRecognizer
 import android.util.Log
+import android.widget.ArrayAdapter
 import android.widget.Toast
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.appcompat.app.AppCompatActivity
 import androidx.core.content.ContextCompat
 import com.sttapp.databinding.ActivityMainBinding
+import com.sttapp.stt.AndroidSpeechRecognizerEngine
+import com.sttapp.stt.STTEngine
+import com.sttapp.stt.WhisperSTTEngine
 import com.sttapp.wakeword.SimpleWakeWordDetector
+import java.util.Locale
 
 /**
  * MainActivity - The primary activity for the Android Speech-to-Text (STT) application.
@@ -28,9 +30,11 @@ import com.sttapp.wakeword.SimpleWakeWordDetector
  * 3. Wake word detection: Automatically starts recording when wake words are detected
  * 4. ADB command support: Can be controlled remotely via ADB broadcast commands
  * 5. Real-time transcription: Shows partial results as speech is being processed
+ * 6. Multiple STT engines: Supports Android Native and Whisper (faster-whisper)
  * 
- * The app uses Android's native SpeechRecognizer API which supports both online and offline
- * speech recognition (offline requires language packs to be installed).
+ * The app supports multiple STT engines:
+ * - Android's native SpeechRecognizer API (online/offline with language packs)
+ * - Whisper (via faster-whisper server or whisper.cpp)
  */
 class MainActivity : AppCompatActivity() {
     companion object {
@@ -46,9 +50,12 @@ class MainActivity : AppCompatActivity() {
     // View binding instance - provides type-safe access to UI elements defined in activity_main.xml
     private lateinit var binding: ActivityMainBinding
     
-    // Android's SpeechRecognizer instance - handles the actual speech recognition
-    // Nullable because it's initialized after permission is granted
-    private var speechRecognizer: SpeechRecognizer? = null
+    // STT Engine instance - handles the actual speech recognition
+    // Nullable because it's initialized after permission is granted and engine is selected
+    private var sttEngine: STTEngine? = null
+    
+    // Available STT engines
+    private val availableEngines = mutableListOf<STTEngine>()
     
     // Flag to track if we're currently listening for speech
     // Used to prevent multiple simultaneous recognition sessions
@@ -76,7 +83,7 @@ class MainActivity : AppCompatActivity() {
      * When the user grants or denies microphone permission, this callback is invoked.
      * 
      * If granted:
-     * - Initializes the SpeechRecognizer so recording can begin
+     * - Initializes the selected STT engine so recording can begin
      * - If wake word mode was previously enabled, starts wake word detection now
      * 
      * If denied:
@@ -87,8 +94,8 @@ class MainActivity : AppCompatActivity() {
         ActivityResultContracts.RequestPermission()
     ) { isGranted: Boolean ->
         if (isGranted) {
-            // Permission granted - initialize speech recognition
-            initializeSpeechRecognizer()
+            // Permission granted - initialize selected STT engine
+            initializeSTTEngine()
             // If wake word mode was enabled before permission was granted, start it now
             // This handles the case where user enables wake word switch before granting permission
             if (wakeWordMode) {
@@ -147,13 +154,14 @@ class MainActivity : AppCompatActivity() {
      * 
      * This method:
      * 1. Sets up the view binding and content view
-     * 2. Configures UI event handlers (buttons, switches)
-     * 3. Checks for microphone permission and requests if needed
-     * 4. Registers the broadcast receiver for ADB commands
-     * 5. Initializes the Voice Activity Detector (VAD) with callbacks
-     * 6. Initializes the Wake Word Detector with callbacks
+     * 2. Configures UI event handlers (buttons, switches, engine selector)
+     * 3. Initializes available STT engines
+     * 4. Checks for microphone permission and requests if needed
+     * 5. Registers the broadcast receiver for ADB commands
+     * 6. Initializes the Voice Activity Detector (VAD) with callbacks
+     * 7. Initializes the Wake Word Detector with callbacks
      * 
-     * Note: SpeechRecognizer is not initialized here because it requires permission first.
+     * Note: STT engine is not initialized here because it requires permission first.
      * It will be initialized in checkPermission() or requestPermissionLauncher callback.
      */
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -164,7 +172,10 @@ class MainActivity : AppCompatActivity() {
 
         Log.i(TAG, "MainActivity created")
         
-        // Set up all UI event handlers (button clicks, switch toggles, etc.)
+        // Initialize available STT engines
+        initializeAvailableEngines()
+        
+        // Set up all UI event handlers (button clicks, switch toggles, engine selector, etc.)
         setupUI()
         
         // Check if we have microphone permission, request if not
@@ -212,7 +223,7 @@ class MainActivity : AppCompatActivity() {
                         if (autoRecordMode && isListening) {
                             // Let current recognition finish processing the speech
                             // VAD will automatically trigger the next recording when new speech is detected
-                            // No need to manually stop - SpeechRecognizer will finish and call onResults()
+                            // No need to manually stop - STT engine will finish and call onResults()
                         }
                     }
                 }
@@ -264,6 +275,39 @@ class MainActivity : AppCompatActivity() {
     }
     
     /**
+     * Initializes the list of available STT engines.
+     * 
+     * This method creates instances of all available STT engines and adds them to the list.
+     * Only engines that are available on the device will be added.
+     */
+    private fun initializeAvailableEngines() {
+        // Android Native SpeechRecognizer
+        val androidEngine = AndroidSpeechRecognizerEngine(this)
+        if (androidEngine.isAvailable()) {
+            availableEngines.add(androidEngine)
+            Log.i(TAG, "Android Native STT engine available")
+        }
+        
+        // Whisper STT Engine (whisper.cpp - on-device)
+        // Model file should be in app/src/main/assets/models/ (e.g., ggml-base.bin)
+        val whisperEngine = WhisperSTTEngine(
+            context = this,
+            modelPath = null, // null = use default from assets/models/, or provide path to model file
+            useLocalWhisperCpp = true // Always use local whisper.cpp
+        )
+        // Always add Whisper engine to the list - let it fail gracefully if library isn't loaded
+        // This allows users to see and select it, and they'll get an error message if it doesn't work
+        availableEngines.add(whisperEngine)
+        if (whisperEngine.isAvailable()) {
+            Log.i(TAG, "Whisper STT engine (whisper.cpp) available")
+        } else {
+            Log.w(TAG, "Whisper STT engine added but may not be fully functional - ensure whisper.cpp native library is built")
+        }
+        
+        Log.i(TAG, "Total available STT engines: ${availableEngines.size}")
+    }
+    
+    /**
      * Registers the broadcast receiver to listen for ADB commands.
      * 
      * This sets up the receiver to listen for ACTION_START_RECORDING and ACTION_STOP_RECORDING
@@ -294,6 +338,7 @@ class MainActivity : AppCompatActivity() {
      * Sets up all UI event handlers and click listeners.
      * 
      * This method configures:
+     * - Engine selector: Allows user to choose STT engine
      * - Record button: Toggles recording on/off
      * - Clear button: Clears the transcription text
      * - Auto-record switch: Enables/disables VAD-based auto-recording
@@ -302,6 +347,50 @@ class MainActivity : AppCompatActivity() {
      * The switches have their entire layout containers clickable for better UX.
      */
     private fun setupUI() {
+        // Set up STT engine selector
+        val engineNames = availableEngines.map { it.getName() }
+        Log.i(TAG, "Setting up engine selector with ${engineNames.size} engines: $engineNames")
+        
+        val adapter = ArrayAdapter(this, android.R.layout.simple_dropdown_item_1line, engineNames)
+        binding.engineSpinner.setAdapter(adapter)
+        
+        // Enable the dropdown to be clickable
+        binding.engineSpinner.setOnClickListener {
+            binding.engineSpinner.showDropDown()
+        }
+        
+        // Select first available engine by default
+        if (availableEngines.isNotEmpty()) {
+            val defaultEngineName = availableEngines[0].getName()
+            binding.engineSpinner.setText(defaultEngineName, false)
+            Log.i(TAG, "Default STT engine selected: $defaultEngineName")
+        } else {
+            Log.w(TAG, "No STT engines available!")
+        }
+        
+        // When engine selection changes, reinitialize the STT engine
+        binding.engineSpinner.setOnItemClickListener { _, _, position, _ ->
+            Log.d(TAG, "Engine selection clicked, position: $position, available engines: ${availableEngines.size}")
+            if (position < availableEngines.size) {
+                val selectedEngine = availableEngines[position]
+                Log.i(TAG, "STT engine changed to: ${selectedEngine.getName()}")
+                // Destroy current engine
+                sttEngine?.destroy()
+                sttEngine = null
+                // Initialize new engine if permission is granted
+                if (ContextCompat.checkSelfPermission(
+                        this,
+                        Manifest.permission.RECORD_AUDIO
+                    ) == PackageManager.PERMISSION_GRANTED
+                ) {
+                    initializeSTTEngine()
+                }
+                Toast.makeText(this, "STT Engine: ${selectedEngine.getName()}", Toast.LENGTH_SHORT).show()
+            } else {
+                Log.e(TAG, "Invalid engine position: $position (max: ${availableEngines.size - 1})")
+            }
+        }
+        
         // Record button: Toggle recording state
         // When not listening, starts recording. When listening, stops recording.
         binding.recordButton.setOnClickListener {
@@ -359,7 +448,7 @@ class MainActivity : AppCompatActivity() {
     /**
      * Checks if RECORD_AUDIO permission is granted.
      * 
-     * If permission is already granted, initializes the SpeechRecognizer immediately.
+     * If permission is already granted, initializes the STT engine immediately.
      * If not granted, launches the permission request dialog using the modern Activity Result API.
      * 
      * This is called in onCreate() to ensure we have permission before attempting to use
@@ -367,12 +456,12 @@ class MainActivity : AppCompatActivity() {
      */
     private fun checkPermission() {
         when {
-            // Permission already granted - initialize speech recognizer right away
+            // Permission already granted - initialize STT engine right away
             ContextCompat.checkSelfPermission(
                 this,
                 Manifest.permission.RECORD_AUDIO
             ) == PackageManager.PERMISSION_GRANTED -> {
-                initializeSpeechRecognizer()
+                initializeSTTEngine()
             }
             // Permission not granted - request it from the user
             else -> {
@@ -384,48 +473,46 @@ class MainActivity : AppCompatActivity() {
     }
 
     /**
-     * Initializes the Android SpeechRecognizer instance.
+     * Initializes the selected STT engine.
      * 
-     * This creates and configures the SpeechRecognizer with a RecognitionListener
+     * This creates and configures the STT engine with a listener
      * that handles all speech recognition events (start, results, errors, etc.).
      * 
      * Note: This requires RECORD_AUDIO permission to be granted first.
-     * Some devices may not have speech recognition available (rare), in which case
-     * we show an error message to the user.
+     * The engine is selected from the UI spinner.
      */
-    private fun initializeSpeechRecognizer() {
-        // Check if speech recognition is available on this device
-        // Most modern Android devices support it, but we check to be safe
-        if (SpeechRecognizer.isRecognitionAvailable(this)) {
-            // Create the SpeechRecognizer instance
-            speechRecognizer = SpeechRecognizer.createSpeechRecognizer(this)
-            // Set up the recognition listener to handle all recognition events
-            // This listener will receive callbacks for speech start, results, errors, etc.
-            speechRecognizer?.setRecognitionListener(createRecognitionListener())
-        } else {
-            // Speech recognition not available on this device (very rare)
+    private fun initializeSTTEngine() {
+        // Get selected engine from spinner
+        val selectedEngineName = binding.engineSpinner.text.toString()
+        val selectedEngine = availableEngines.find { it.getName() == selectedEngineName }
+            ?: availableEngines.firstOrNull()
+        
+        if (selectedEngine == null) {
+            Log.e(TAG, "No STT engine available")
             Toast.makeText(
                 this,
-                "Speech recognition is not available on this device",
+                "No STT engine available",
                 Toast.LENGTH_LONG
             ).show()
+            return
         }
+        
+        // Destroy previous engine if exists
+        sttEngine?.destroy()
+        
+        // Initialize new engine
+        sttEngine = selectedEngine
+        sttEngine?.initialize(createSTTListener())
+        Log.i(TAG, "STT engine initialized: ${selectedEngine.getName()}")
     }
 
     /**
      * Starts speech recognition listening.
      * 
      * This method:
-     * 1. Ensures SpeechRecognizer is initialized (creates if needed)
-     * 2. Configures the recognition intent with language settings and preferences
-     * 3. Starts listening for speech input
-     * 4. Updates the UI to show "Listening..." state
-     * 
-     * The recognition intent is configured to:
-     * - Use free-form language model (best for general speech)
-     * - Use the device's default locale/language
-     * - Prefer offline mode (if language packs are installed)
-     * - Enable partial results (for real-time transcription feedback)
+     * 1. Ensures STT engine is initialized (creates if needed)
+     * 2. Starts listening for speech input
+     * 3. Updates the UI to show "Listening..." state
      * 
      * This can be called:
      * - Manually via the record button
@@ -434,45 +521,33 @@ class MainActivity : AppCompatActivity() {
      * - Remotely via ADB broadcast command
      */
     fun startListening() {
-        // Ensure SpeechRecognizer is initialized before starting
+        // Ensure STT engine is initialized before starting
         // This handles the case where permission was granted after onCreate
-        if (speechRecognizer == null) {
-            initializeSpeechRecognizer()
+        if (sttEngine == null) {
+            initializeSTTEngine()
         }
-
-        // Create and configure the recognition intent
-        // This intent tells Android's SpeechRecognizer how to process the audio
-        val intent = android.content.Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH).apply {
-            // Use free-form language model - best for general conversational speech
-            // Alternative: LANGUAGE_MODEL_WEB_SEARCH (better for short queries)
-            putExtra(RecognizerIntent.EXTRA_LANGUAGE_MODEL, RecognizerIntent.LANGUAGE_MODEL_FREE_FORM)
-            
-            // Use the device's default locale (language)
-            // This ensures recognition matches the user's language settings
-            putExtra(RecognizerIntent.EXTRA_LANGUAGE, java.util.Locale.getDefault())
-            
-            // Enable offline mode preference - requires offline language packs to be installed
-            // If offline packs are available, recognition will work without internet
-            // If not available, it will fall back to online recognition
-            putExtra(RecognizerIntent.EXTRA_PREFER_OFFLINE, true)
-            
-            // Enable partial results - provides real-time transcription as user speaks
-            // Without this, you only get results after speech ends
-            putExtra(RecognizerIntent.EXTRA_PARTIAL_RESULTS, true)
+        
+        if (sttEngine == null) {
+            Log.e(TAG, "STT engine not available")
+            Toast.makeText(this, "STT engine not available", Toast.LENGTH_SHORT).show()
+            return
         }
 
         try {
-            Log.i(TAG, "Starting speech recognition...")
+            Log.i(TAG, "Starting speech recognition with ${sttEngine?.getName()}...")
             // Start the recognition session
-            // The RecognitionListener will receive callbacks for all events
-            speechRecognizer?.startListening(intent)
+            // The STT listener will receive callbacks for all events
+            sttEngine?.startListening(
+                language = Locale.getDefault().toString(),
+                preferOffline = true
+            )
             // Update state flag to prevent duplicate sessions
             isListening = true
             // Update UI to show "Listening..." status and change button text
             updateUI()
         } catch (e: Exception) {
             // Handle any errors during recognition start
-            // Common causes: permission issues, recognizer not initialized, device issues
+            // Common causes: permission issues, engine not initialized, device issues
             Log.e(TAG, "Error starting speech recognition", e)
             Toast.makeText(this, "Error starting speech recognition: ${e.message}", Toast.LENGTH_SHORT).show()
         }
@@ -591,7 +666,7 @@ class MainActivity : AppCompatActivity() {
     fun stopListening() {
         Log.i(TAG, "Stopping speech recognition...")
         // Stop capturing audio - any speech already captured will still be processed
-        speechRecognizer?.stopListening()
+        sttEngine?.stopListening()
         // Update state flag
         isListening = false
         // Update UI to reflect stopped state
@@ -620,11 +695,11 @@ class MainActivity : AppCompatActivity() {
     }
 
     /**
-     * Creates and returns a RecognitionListener that handles all speech recognition events.
+     * Creates and returns an STTListener that handles all speech recognition events.
      * 
-     * This listener receives callbacks from Android's SpeechRecognizer throughout the
+     * This listener receives callbacks from the STT engine throughout the
      * recognition lifecycle:
-     * - onReadyForSpeech: Recognizer is ready to receive audio
+     * - onReadyForSpeech: Engine is ready to receive audio
      * - onBeginningOfSpeech: Speech input has started
      * - onRmsChanged: Audio level changes (can be used for visual feedback)
      * - onEndOfSpeech: User stopped speaking
@@ -632,93 +707,60 @@ class MainActivity : AppCompatActivity() {
      * - onPartialResults: Intermediate transcription results (real-time)
      * - onError: An error occurred during recognition
      * 
-     * @return A RecognitionListener instance configured to handle all recognition events
+     * @return An STTListener instance configured to handle all recognition events
      */
-    private fun createRecognitionListener(): RecognitionListener {
-        return object : RecognitionListener {
+    private fun createSTTListener(): STTEngine.STTListener {
+        return object : STTEngine.STTListener {
             /**
-             * Called when the recognizer is ready to receive speech input.
+             * Called when the engine is ready to receive speech input.
              * This happens right after startListening() is called, before any audio is captured.
-             * 
-             * @param params Optional parameters bundle (usually null)
              */
-            override fun onReadyForSpeech(params: Bundle?) {
-                Log.d(TAG, "Recognition: Ready for speech")
+            override fun onReadyForSpeech() {
+                Log.d(TAG, "STT: Ready for speech")
                 binding.statusText.text = "Ready for speech"
             }
 
             /**
-             * Called when the recognizer detects that speech has begun.
+             * Called when the engine detects that speech has begun.
              * This is triggered when audio levels exceed a threshold indicating speech.
              */
             override fun onBeginningOfSpeech() {
-                Log.i(TAG, "Recognition: Beginning of speech detected")
+                Log.i(TAG, "STT: Beginning of speech detected")
                 binding.statusText.text = "Listening..."
             }
 
             /**
              * Called periodically with the current audio level (RMS in dB).
              * This can be used to show a visual audio level indicator.
-             * Currently commented out to avoid log spam, but can be enabled for debugging.
              * 
              * @param rmsdB Root Mean Square audio level in decibels
              */
             override fun onRmsChanged(rmsdB: Float) {
                 // Log audio level periodically (throttle to avoid spam)
                 // This could be used to update a visual audio level indicator
-                // Log.d(TAG, "Recognition: RMS changed to $rmsdB dB")
+                // Log.d(TAG, "STT: RMS changed to $rmsdB dB")
             }
 
             /**
-             * Called when audio buffer data is received.
-             * Not typically used in standard implementations.
-             * 
-             * @param buffer Raw audio buffer data
-             */
-            override fun onBufferReceived(buffer: ByteArray?) {
-                // Not used in this implementation
-                // This callback provides raw audio data if needed for custom processing
-            }
-
-            /**
-             * Called when the recognizer detects that speech has ended.
+             * Called when the engine detects that speech has ended.
              * This happens when the user stops speaking or after a timeout.
-             * The recognizer will now process the captured audio and generate results.
+             * The engine will now process the captured audio and generate results.
              */
             override fun onEndOfSpeech() {
-                Log.i(TAG, "Recognition: End of speech detected, processing...")
+                Log.i(TAG, "STT: End of speech detected, processing...")
                 binding.statusText.text = "Processing..."
             }
 
             /**
              * Called when an error occurs during recognition.
              * 
-             * Common errors:
-             * - ERROR_NO_MATCH: No speech was recognized (user didn't speak clearly, or silence)
-             * - ERROR_SPEECH_TIMEOUT: No speech input detected within timeout period
-             * - ERROR_AUDIO: Audio recording failed (hardware issue, permission problem)
-             * - ERROR_NETWORK: Network error (for online recognition)
-             * - ERROR_RECOGNIZER_BUSY: Recognizer is already processing another request
-             * 
-             * @param error Error code from SpeechRecognizer constants
+             * @param error Error code
+             * @param message Human-readable error message
              */
-            override fun onError(error: Int) {
-                // Map error codes to human-readable messages
-                val errorMessage = when (error) {
-                    SpeechRecognizer.ERROR_AUDIO -> "Audio recording error"
-                    SpeechRecognizer.ERROR_CLIENT -> "Client error"
-                    SpeechRecognizer.ERROR_INSUFFICIENT_PERMISSIONS -> "Insufficient permissions"
-                    SpeechRecognizer.ERROR_NETWORK -> "Network error"
-                    SpeechRecognizer.ERROR_NETWORK_TIMEOUT -> "Network timeout"
-                    SpeechRecognizer.ERROR_NO_MATCH -> "No speech match"
-                    SpeechRecognizer.ERROR_RECOGNIZER_BUSY -> "Recognizer busy"
-                    SpeechRecognizer.ERROR_SERVER -> "Server error"
-                    SpeechRecognizer.ERROR_SPEECH_TIMEOUT -> "No speech input"
-                    else -> "Unknown error: $error"
-                }
-                Log.e(TAG, "Recognition error: $errorMessage (code: $error)")
+            override fun onError(error: Int, message: String) {
+                Log.e(TAG, "STT error: $message (code: $error)")
                 // Update UI to show error message
-                binding.statusText.text = "Error: $errorMessage"
+                binding.statusText.text = "Error: $message"
                 // Reset listening state
                 isListening = false
                 updateUI()
@@ -735,14 +777,12 @@ class MainActivity : AppCompatActivity() {
              * - Listening state is reset
              * - If auto-record mode is enabled, VAD is restarted to detect next speech
              * 
-             * @param results Bundle containing recognition results
+             * @param results List of transcription results, ordered by confidence
              */
-            override fun onResults(results: Bundle?) {
-                // Extract the recognition results - these are ordered by confidence
-                val matches = results?.getStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION)
-                if (!matches.isNullOrEmpty()) {
+            override fun onResults(results: List<String>) {
+                if (results.isNotEmpty()) {
                     // Get the top result (highest confidence)
-                    val transcription = matches[0]
+                    val transcription = results[0]
                     Log.i(TAG, "Transcription available: \"$transcription\"")
                     // Append to the transcription text view (add newline for readability)
                     binding.transcriptionText.append("$transcription\n")
@@ -768,27 +808,15 @@ class MainActivity : AppCompatActivity() {
              * This provides real-time transcription as the user speaks, before final results.
              * Useful for showing live feedback. Results may change as more audio is processed.
              * 
-             * @param partialResults Bundle containing partial recognition results
+             * @param partialResults List of partial transcription results
              */
-            override fun onPartialResults(partialResults: Bundle?) {
-                // Extract partial results
-                val matches = partialResults?.getStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION)
-                if (!matches.isNullOrEmpty()) {
-                    val partialText = matches[0]
+            override fun onPartialResults(partialResults: List<String>) {
+                if (partialResults.isNotEmpty()) {
+                    val partialText = partialResults[0]
                     Log.d(TAG, "Partial transcription: \"$partialText\"")
                     // Show partial result in status text for real-time feedback
                     binding.statusText.text = "Partial: $partialText"
                 }
-            }
-
-            /**
-             * Called for other recognition events (rarely used).
-             * 
-             * @param eventType Event type code
-             * @param params Optional event parameters
-             */
-            override fun onEvent(eventType: Int, params: Bundle?) {
-                Log.d(TAG, "Recognition event: $eventType")
             }
         }
     }
@@ -800,7 +828,7 @@ class MainActivity : AppCompatActivity() {
      * - Unregisters the broadcast receiver (prevents memory leaks)
      * - Stops VAD detection (releases audio resources)
      * - Stops wake word detection (releases audio resources)
-     * - Destroys the SpeechRecognizer (releases system resources)
+     * - Destroys the STT engine (releases system resources)
      * 
      * It's important to clean up all resources to prevent memory leaks and
      * ensure audio resources are released for other apps to use.
@@ -814,8 +842,7 @@ class MainActivity : AppCompatActivity() {
         vad?.stopDetection()
         // Stop wake word detection and release audio resources
         wakeWordDetector?.stopDetection()
-        // Destroy SpeechRecognizer to release system resources
-        speechRecognizer?.destroy()
+        // Destroy STT engine to release system resources
+        sttEngine?.destroy()
     }
 }
-

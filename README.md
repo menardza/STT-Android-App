@@ -8,12 +8,14 @@ An Android application for on-device speech-to-text transcription, compatible wi
 
 ## Features
 
+- **Multiple STT Engines**: Supports Android Native and Whisper (faster-whisper)
 - **On-device transcription**: Uses Android's built-in SpeechRecognizer API with offline mode support
-- **Real-time transcription**: Shows partial results as you speak
+- **Whisper support**: Optional Whisper STT via faster-whisper server or whisper.cpp (coming soon)
+- **Real-time transcription**: Shows partial results as you speak (Android Native)
 - **Voice Activity Detection (VAD)**: Automatically detects when speech starts and stops
 - **Wake word detection**: Hands-free activation using wake words like "hey jarvis" or "alexa"
 - **ADB remote control**: Control recording via ADB commands for automation
-- **Simple UI**: Clean interface with record button and transcription display
+- **Simple UI**: Clean interface with record button, engine selector, and transcription display
 - **Android 14 compatible**: Built for Android 14 (API 34)
 
 ## How It Works
@@ -543,15 +545,85 @@ The app includes wake word detection similar to myAssistant's openwakeword imple
 
 Wake word events are logged with the `WakeWordDetector` tag.
 
-## Comparison with myAssistant STT
+## STT Engine Selection
 
-This Android app uses Android's native SpeechRecognizer API instead of Whisper because:
+The app now supports multiple STT engines that can be selected from the UI:
+
+### Android Native (Default)
 - **Native Android integration**: Better performance and battery efficiency
 - **On-device support**: Works offline with language packs
 - **No external dependencies**: No need to bundle large model files
 - **System-level optimization**: Leverages Android's optimized speech recognition
+- **Real-time partial results**: Shows transcription as you speak
 
-The myAssistant project uses Whisper (faster-whisper) which is a Python-based solution optimized for desktop/server environments.
+### Whisper (faster-whisper)
+- **High accuracy**: State-of-the-art speech recognition
+- **Server-based**: Requires a faster-whisper server (see setup below)
+- **Future**: whisper.cpp integration for on-device processing (coming soon)
+
+To switch engines, use the "STT Engine" dropdown in the app UI.
+
+## Whisper Setup (whisper.cpp)
+
+The app uses **whisper.cpp** for on-device Whisper processing. This provides:
+- **Fully offline**: No network required
+- **On-device processing**: All processing happens on the device
+- **Privacy**: Audio never leaves the device
+- **High accuracy**: State-of-the-art speech recognition
+
+### Quick Start
+
+1. **Add whisper.cpp to the project** (see [WHISPER_CPP_SETUP.md](WHISPER_CPP_SETUP.md) for details):
+   ```bash
+   git submodule add https://github.com/ggerganov/whisper.cpp.git app/src/main/cpp/whisper.cpp
+   git submodule update --init --recursive
+   ```
+
+2. **Download a Whisper model**:
+   ```bash
+   cd app/src/main/cpp/whisper.cpp
+   ./models/download-ggml-model.sh base
+   ```
+
+3. **Copy model to assets**:
+   ```bash
+   mkdir -p app/src/main/assets/models
+   cp app/src/main/cpp/whisper.cpp/models/ggml-base.bin app/src/main/assets/models/
+   ```
+
+4. **Complete the integration**:
+   - Update `app/src/main/cpp/CMakeLists.txt` (uncomment whisper.cpp sections)
+   - Update `app/src/main/cpp/whisper_jni.cpp` (implement actual whisper.cpp calls)
+   - See [WHISPER_CPP_SETUP.md](WHISPER_CPP_SETUP.md) for detailed instructions
+
+5. **Build and run**:
+   - Sync Gradle in Android Studio
+   - Build the project
+   - Select "Whisper (whisper.cpp)" from the STT Engine dropdown
+
+### Model Recommendations
+
+- **tiny**: Fastest, lowest accuracy (~39MB) - Good for testing
+- **base**: Good balance (~142MB) - **Recommended for most use cases**
+- **small**: Better accuracy (~466MB) - For high-accuracy needs
+- **medium/large**: Not recommended for mobile (too large/slow)
+
+### Current Status
+
+The integration structure is complete, but you need to:
+1. Add whisper.cpp as a submodule or download it manually
+2. Complete the JNI implementation in `whisper_jni.cpp`
+3. Update `CMakeLists.txt` to include whisper.cpp source files
+
+See [WHISPER_CPP_SETUP.md](WHISPER_CPP_SETUP.md) for step-by-step instructions.
+
+## Comparison with myAssistant STT
+
+This Android app now supports both:
+- **Android Native**: Optimized for mobile, works offline with language packs
+- **Whisper**: High-accuracy transcription (via server or future on-device support)
+
+The myAssistant project uses Whisper (faster-whisper) which is a Python-based solution optimized for desktop/server environments. This Android app can now connect to the same faster-whisper backend for consistent transcription quality.
 
 ## Contributing
 
