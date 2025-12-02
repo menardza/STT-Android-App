@@ -114,3 +114,8 @@ Thumbs.db
 hs_err_pid*
 replay_pid*
 
+# Whisper model files (too large for git)
+app/src/main/assets/models/*.bin
+app/src/main/assets/models/*.ggml
+app/src/main/assets/models/*.gguf
+

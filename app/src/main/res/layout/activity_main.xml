@@ -72,6 +72,32 @@
         app:layout_constraintTop_toBottomOf="@+id/titleText"
         app:layout_constraintWidth_percent="0.35">
 
+        <!-- STT Engine Selector -->
+        <TextView
+            android:id="@+id/engineLabel"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:text="STT Engine:"
+            android:textSize="14sp"
+            android:textColor="@android:color/darker_gray"
+            android:layout_marginBottom="4dp" />
+
+        <com.google.android.material.textfield.TextInputLayout
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginBottom="12dp"
+            android:hint="Select STT Engine"
+            style="@style/Widget.Material3.TextInputLayout.OutlinedBox">
+            <com.google.android.material.textfield.MaterialAutoCompleteTextView
+                android:id="@+id/engineSpinner"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:inputType="none"
+                android:focusable="true"
+                android:focusableInTouchMode="true"
+                android:clickable="true" />
+        </com.google.android.material.textfield.TextInputLayout>
+
         <!-- Auto-record Toggle -->
         <LinearLayout
             android:id="@+id/autoRecordLayout"
